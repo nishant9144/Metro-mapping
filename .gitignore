@@ -1,0 +1,13 @@
+## Python caches
+__pycache__/
+*.pyc
+
+## Solver/minisat artifacts
+*.satinput
+*.satoutput
+*.metromap
+
+## Compiled executables (from Makefile)
+encoder
+decoder
+
