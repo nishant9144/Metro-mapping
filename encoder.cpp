@@ -1,207 +1,278 @@
 #include <iostream>
 #include <vector>
-#include <fstream>
 #include <string>
-#include <numeric>
+#include <fstream>
+#include <utility>
+#include <algorithm>
+#include <cstdlib>
 
 class VarManager {
 private:
-    int N, M, K, T_max;
-    int var_count = 0;
-    int at_offset;
-    int occupies_offset;
-    int move_h_offset;
-    int move_v_offset;
-    int turn_offset;
-    int turn_sum_offset;
-public:
-    VarManager(int n, int m, int k, int t_max) : N(n), M(m), K(k), T_max(t_max) {
-        at_offset = 1;
-        occupies_offset = at_offset + K * N * M * (T_max + 1);
-        move_h_offset = occupies_offset + K * N * M;
-        move_v_offset = move_h_offset + K * (T_max);
-        turn_offset = move_v_offset + K * (T_max);
-        turn_sum_offset = turn_offset + K * (T_max);
-        var_count = turn_sum_offset;
-    }
-    int at(int k, int x, int y, int t) const {
-        return at_offset + k * (N * M * (T_max + 1)) + y * (N * (T_max + 1)) + x * (T_max + 1) + t;
-    }
-    int occupies(int k, int x, int y) const {
-        return occupies_offset + k * (N * M) + y * N + x;
-    }
-    int move_h(int k, int t) const { return move_h_offset + k * T_max + t; }
-    int move_v(int k, int t) const { return move_v_offset + k * T_max + t; }
-    int turn(int k, int t) const { return turn_offset + k * T_max + t; }
-    
-    int turn_sum(int k, int t, int j) const {
-        return turn_sum_offset + k * (T_max * 10) + t * 10 + j;
-    }
-    int total_vars() const { 
-        return turn_sum_offset + K * T_max * 10;
-    }
-};
+    int N, M, K;
+    std::vector<long long> L_k_offsets;
+    int var_count;
 
-class Encoder {
+    int x_base, p_base, u_base, h_base, z_base, rend_base;
+
+public:
+    VarManager(int n, int m, int k, const std::vector<long long>& l_values) 
+        : N(n), M(m), K(k) {
+        
+        long long total_L = 0;
+        L_k_offsets.push_back(0);
+        for(long long l : l_values) {
+            total_L += l;
+            L_k_offsets.push_back(total_L);
+        }
+
+        long long num_x = K * N * M;
+        long long num_p = total_L * N * M;
+        long long num_u = total_L;
+        long long num_h = total_L;
+        long long num_z = total_L;
+        long long num_rend = total_L;
+        
+        var_count = 0;
+        x_base = newVarBlock(num_x);
+        p_base = newVarBlock(num_p);
+        u_base = newVarBlock(num_u);
+        h_base = newVarBlock(num_h);
+        z_base = newVarBlock(num_z);
+        rend_base = newVarBlock(num_rend);
+    }
+
+    int idX(int k, int x, int y) const { return x_base + k * (N * M) + y * N + x; }
+    int idP(int k, int x, int y, int t) const {
+        long long p_offset_k = L_k_offsets[k] * N * M;
+        return p_base + p_offset_k + t * (N * M) + y * N + x;
+    }
+    int idU(int k, int t) const { return u_base + L_k_offsets[k] + t; }
+    int idH(int k, int t) const { return h_base + L_k_offsets[k] + t; }
+    int idZ(int k, int t) const { return z_base + L_k_offsets[k] + t; }
+    int idReachedEnd(int k, int t) const { return rend_base + L_k_offsets[k] + t; }
+
+    int newAuxVar() { return ++var_count; }
+    int getTotalVars() const { return var_count; }
+
 private:
-    int N, M, K, J, P, scenario, T_max;
-    std::vector<std::pair<int, int>> starts, ends;
-    std::vector<std::pair<int, int>> popular_cells;
-    std::vector<std::vector<int>> clauses;
-    
-public:
-    void readInput(const std::string& filename) {
-        std::ifstream inFile(filename);
-        inFile >> scenario;
-        if (scenario == 1) {
-            inFile >> N >> M >> K >> J;
-        } else {
-            inFile >> N >> M >> K >> J >> P;
-        }
-        starts.resize(K);
-        ends.resize(K);
-        for (int k = 0; k < K; ++k) {
-            inFile >> starts[k].first >> starts[k].second >> ends[k].first >> ends[k].second;
-        }
-        if (scenario == 2) {
-            popular_cells.resize(P);
-            for (int p = 0; p < P; ++p) {
-                inFile >> popular_cells[p].first >> popular_cells[p].second;
-            }
-        }
-    }
-
-    void generateClauses() {
-        T_max = (N - 1) + (M - 1) + 2 * J;
-        VarManager vars(N, M, K, T_max);
-
-        // C1: Start and End constraints
-        for (int k = 0; k < K; ++k) {
-            clauses.push_back({vars.at(k, starts[k].first, starts[k].second, 0)});
-            clauses.push_back({vars.at(k, ends[k].first, ends[k].second, T_max)});
-        }
-        // C2 & C3: Path validity and transitions
-        for (int k = 0; k < K; ++k) {
-            for (int t = 0; t <= T_max; ++t) {
-                std::vector<int> at_least_one_pos;
-                for (int x = 0; x < N; ++x) { for (int y = 0; y < M; ++y) at_least_one_pos.push_back(vars.at(k, x, y, t)); }
-                clauses.push_back(at_least_one_pos);
-                for (size_t i = 0; i < at_least_one_pos.size(); ++i) {
-                    for (size_t j = i + 1; j < at_least_one_pos.size(); ++j) {
-                        clauses.push_back({-at_least_one_pos[i], -at_least_one_pos[j]});
-                    }
-                }
-                if (t < T_max) {
-                    for (int x = 0; x < N; ++x) {
-                        for (int y = 0; y < M; ++y) {
-                            std::vector<int> possible_next_pos;
-                            possible_next_pos.push_back(vars.at(k, x, y, t + 1));
-                            if (x > 0) possible_next_pos.push_back(vars.at(k, x - 1, y, t + 1));
-                            if (x < N - 1) possible_next_pos.push_back(vars.at(k, x + 1, y, t + 1));
-                            if (y > 0) possible_next_pos.push_back(vars.at(k, x, y - 1, t + 1));
-                            if (y < M - 1) possible_next_pos.push_back(vars.at(k, x, y + 1, t + 1));
-                            std::vector<int> clause = possible_next_pos;
-                            clause.push_back(-vars.at(k, x, y, t));
-                            clauses.push_back(clause);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // C4: Define Occupies variables and add STRONG collision constraint
-        for (int k = 0; k < K; ++k) {
-            for (int x = 0; x < N; ++x) {
-                for (int y = 0; y < M; ++y) {
-                    std::vector<int> at_any_time_clause;
-                    at_any_time_clause.push_back(-vars.occupies(k,x,y));
-                    for (int t = 0; t <= T_max; ++t) {
-                        clauses.push_back({-vars.at(k,x,y,t), vars.occupies(k,x,y)});
-                        at_any_time_clause.push_back(vars.at(k,x,y,t));
-                    }
-                    clauses.push_back(at_any_time_clause);
-                }
-            }
-        }
-        for (int x = 0; x < N; ++x) {
-            for (int y = 0; y < M; ++y) {
-                for (int k1 = 0; k1 < K; ++k1) {
-                    for (int k2 = k1 + 1; k2 < K; ++k2) {
-                        clauses.push_back({-vars.occupies(k1, x, y), -vars.occupies(k2, x, y)});
-                    }
-                }
-            }
-        }
-
-        // C5: Turn Constraints
-        define_turn_clauses(vars);
-        
-        // C6: Popular Cells (Scenario 2)
-        if (scenario == 2) {
-            for (const auto& cell : popular_cells) {
-                std::vector<int> popular_clause;
-                for (int k = 0; k < K; ++k) {
-                    popular_clause.push_back(vars.occupies(k, cell.first, cell.second));
-                }
-                clauses.push_back(popular_clause);
-            }
-        }
-    }
-
-    // The signature below is the important part - it now takes a const VarManager&
-    void define_turn_clauses(const VarManager& vars) {
-        for (int k = 0; k < K; ++k) {
-            for (int t = 0; t < T_max; ++t) {
-                if (t > 0) {
-                    int m_h_prev = vars.move_h(k, t-1), m_v_prev = vars.move_v(k, t-1);
-                    int m_h_curr = vars.move_h(k, t),   m_v_curr = vars.move_v(k, t);
-                    int turn_curr = vars.turn(k, t);
-                    clauses.push_back({-m_h_prev, -m_v_curr, turn_curr});
-                    clauses.push_back({-m_v_prev, -m_h_curr, turn_curr});
-                }
-                for (int x=0; x<N; ++x){
-                    for (int y=0; y<M; ++y){
-                        if (x < N - 1) clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x+1,y,t+1), vars.move_h(k,t)});
-                        if (x > 0)     clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x-1,y,t+1), vars.move_h(k,t)});
-                        if (y < M-1)   clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x,y+1,t+1), vars.move_v(k,t)});
-                        if (y > 0)     clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x,y-1,t+1), vars.move_v(k,t)});
-                    }
-                }
-            }
-            for (int t = 1; t < T_max; ++t) {
-                for (int j = 1; j <= J + 1; ++j) {
-                    int s_prev_j = (t > 1) ? vars.turn_sum(k, t - 1, j) : 0;
-                    int s_prev_j_minus_1 = (t > 1 && j > 1) ? vars.turn_sum(k, t - 1, j - 1) : 0;
-                    int turn_t = vars.turn(k, t);
-                    int s_curr_j = vars.turn_sum(k, t, j);
-                    if (t > 1) clauses.push_back({-s_prev_j, s_curr_j});
-                    if (t > 1 && j > 1) clauses.push_back({-s_prev_j_minus_1, -turn_t, s_curr_j});
-                    if (j==1) clauses.push_back({-turn_t, s_curr_j});
-                }
-            }
-            clauses.push_back({-vars.turn_sum(k, T_max-1, J+1)});
-        }
-    }
-
-    void writeOutput(const std::string& filename) {
-        VarManager vars(N, M, K, T_max);
-        std::ofstream outFile(filename);
-        outFile << "p cnf " << vars.total_vars() << " " << clauses.size() << std::endl;
-        for (const auto& clause : clauses) {
-            for (int literal : clause) {
-                outFile << literal << " ";
-            }
-            outFile << "0" << std::endl;
-        }
+    int newVarBlock(long long count) {
+        if (count == 0) return var_count + 1;
+        int base = var_count + 1;
+        var_count += count;
+        return base;
     }
 };
 
-int main(int argc, char* argv[]) {
-    if (argc != 2) return 1;
-    std::string test_name = argv[1];
-    Encoder encoder;
-    encoder.readInput(test_name + ".city");
-    encoder.generateClauses();
-    encoder.writeOutput(test_name + ".satinput");
+
+struct Encoder {
+    std::string basename;
+    int scenario;
+    int N, M, K, J, Pcount;
+    std::vector<std::pair<int, int>> starts, ends, popular;
+
+    std::vector<std::vector<int>> clauses;
+    VarManager* vm = nullptr;
+
+    Encoder(const std::string& base) : basename(base) {}
+    ~Encoder() { delete vm; }
+
+    void addClause(const std::vector<int>& c) { clauses.push_back(c); }
+
+    void addAtMostOne(const std::vector<int>& vars) {
+        if (vars.size() <= 1) return;
+        std::vector<int> s(vars.size() - 1);
+        for(size_t i = 0; i < s.size(); ++i) s[i] = vm->newAuxVar();
+        addClause({-vars[0], s[0]});
+        addClause({-vars[1], -s[0]});
+        for (size_t i = 1; i < vars.size() - 1; ++i) {
+            addClause({-s[i-1], s[i]});
+            addClause({-vars[i], s[i]});
+            addClause({s[i-1], vars[i], -s[i]});
+            addClause({-vars[i+1], -s[i]});
+        }
+    }
+    
+    void addExactlyOne(const std::vector<int>& vars) {
+        if (vars.empty()) return;
+        addClause(vars);
+        addAtMostOne(vars);
+    }
+
+    bool readCity() {
+        std::ifstream fin(basename + ".city");
+        if (!fin) { std::cerr << "Cannot open " << basename << ".city" << std::endl; return false; }
+        fin >> scenario;
+        if (!(scenario == 1 || scenario == 2)) { std::cerr << "Scenario must be 1 or 2" << std::endl; return false; }
+        if (scenario == 1) fin >> N >> M >> K >> J;
+        else fin >> N >> M >> K >> J >> Pcount;
+        starts.resize(K); ends.resize(K);
+        for (int k = 0; k < K; k++) { int sx, sy, ex, ey; fin >> sx >> sy >> ex >> ey; starts[k] = {sx, sy}; ends[k] = {ex, ey}; }
+        if (scenario == 2) { popular.resize(Pcount); for (int p = 0; p < Pcount; p++) { int px, py; fin >> px >> py; popular[p] = {px, py}; } }
+        fin.close();
+        return true;
+    }
+
+    void encode() {
+        std::vector<long long> L_k_values;
+        for (int k = 0; k < K; ++k) {
+            int manhattan_dist = std::abs(starts[k].first - ends[k].first) + std::abs(starts[k].second - ends[k].second);
+            long long lk = manhattan_dist + 2 * J + 4;
+            L_k_values.push_back(std::min((long long)N * M, lk));
+        }
+
+        vm = new VarManager(N, M, K, L_k_values);
+
+        for (int k = 0; k < K; ++k) {
+            long long L_k = L_k_values[k];
+            int ex = ends[k].first;
+            int ey = ends[k].second;
+
+            // Link occupation vars (X) with step-position vars (P)
+            for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
+                int xid = vm->idX(k, x, y);
+                std::vector<int> p_at_cell;
+                p_at_cell.reserve(L_k);
+                for (long long t = 0; t < L_k; t++) p_at_cell.push_back(vm->idP(k, x, y, (int)t));
+                std::vector<int> big_or = {-xid};
+                big_or.insert(big_or.end(), p_at_cell.begin(), p_at_cell.end());
+                addClause(big_or);
+                for (int p_var : p_at_cell) addClause({-p_var, xid});
+            }
+
+            // Start constraint
+            addClause({vm->idP(k, starts[k].first, starts[k].second, 0)});
+
+            // *** CORRECTED ***: Robust `ReachedEnd` Termination Constraint
+            std::vector<int> reached_end_vars;
+            for(long long t=0; t<L_k; ++t) reached_end_vars.push_back(vm->idReachedEnd(k, (int)t));
+            addExactlyOne(reached_end_vars);
+
+            for (long long t = 0; t < L_k; ++t) {
+                int rend_t = vm->idReachedEnd(k, (int)t);
+                // If terminates at t, it must be at the end cell.
+                addClause({-rend_t, vm->idP(k, ex, ey, (int)t)});
+                // If terminates at t, the path must have been active at t.
+                addClause({-rend_t, vm->idU(k, (int)t)});
+                // If terminates at t, it must NOT be active at t+1.
+                if (t < L_k - 1) {
+                    addClause({-rend_t, -vm->idU(k, (int)(t + 1))});
+                }
+            }
+
+            // Uniqueness and Simplicity Constraints
+            for (long long t = 0; t < L_k; t++) {
+                std::vector<int> cellIds;
+                cellIds.reserve(N * M);
+                for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) cellIds.push_back(vm->idP(k, x, y, (int)t));
+                addAtMostOne(cellIds);
+            }
+            for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
+                std::vector<int> timeIds;
+                timeIds.reserve(L_k);
+                for(long long t=0; t<L_k; ++t) timeIds.push_back(vm->idP(k, x, y, (int)t));
+                addAtMostOne(timeIds);
+            }
+            
+            // Path Continuity and Helper Variable Definitions (U, H, Z)
+            for (long long t = 0; t < L_k; t++) {
+                int uid = vm->idU(k, (int)t);
+                std::vector<int> p_or = {-uid};
+                for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
+                    addClause({-vm->idP(k, x, y, (int)t), uid});
+                    p_or.push_back(vm->idP(k, x, y, (int)t));
+                }
+                addClause(p_or);
+
+                if (t > 0) {
+                    addClause({-vm->idU(k, (int)t), vm->idU(k, (int)(t - 1))});
+                    for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
+                        std::vector<int> neigh;
+                        if (x > 0) neigh.push_back(vm->idP(k, x - 1, y, (int)(t - 1)));
+                        if (x + 1 < N) neigh.push_back(vm->idP(k, x + 1, y, (int)(t - 1)));
+                        if (y > 0) neigh.push_back(vm->idP(k, x, y - 1, (int)(t - 1)));
+                        if (y + 1 < M) neigh.push_back(vm->idP(k, x, y + 1, (int)(t - 1)));
+                        std::vector<int> cl = {-vm->idP(k, x, y, (int)t)};
+                        cl.insert(cl.end(), neigh.begin(), neigh.end());
+                        addClause(cl);
+                    }
+                    int hid = vm->idH(k, (int)t);
+                    for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
+                        int Pcur = vm->idP(k, x, y, (int)t);
+                        if (y > 0) addClause({-vm->idP(k, x, y - 1, (int)(t - 1)), -Pcur, -hid});
+                        if (y + 1 < M) addClause({-vm->idP(k, x, y + 1, (int)(t - 1)), -Pcur, -hid});
+                        if (x > 0) addClause({-vm->idP(k, x - 1, y, (int)(t - 1)), -Pcur, hid});
+                        if (x + 1 < N) addClause({-vm->idP(k, x + 1, y, (int)(t - 1)), -Pcur, hid});
+                    }
+                }
+                if (t > 1) {
+                    int zid = vm->idZ(k, (int)t);
+                    int hid_t = vm->idH(k, (int)t);
+                    int hid_t_minus_1 = vm->idH(k, (int)(t-1));
+                    addClause({-zid, -hid_t, -hid_t_minus_1});
+                    addClause({-zid, hid_t, hid_t_minus_1});
+                    addClause({zid, -hid_t, hid_t_minus_1});
+                    addClause({zid, hid_t, -hid_t_minus_1});
+                }
+            }
+            std::vector<int> turn_vars;
+            for (long long t = 2; t < L_k; t++) turn_vars.push_back(vm->idZ(k, (int)t));
+            sinz_at_most_k(turn_vars, std::max(0, J));
+        }
+
+        // Mutual exclusion
+        for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
+            std::vector<int> lineIds;
+            for (int k = 0; k < K; k++) lineIds.push_back(vm->idX(k,x,y));
+            addAtMostOne(lineIds);
+        }
+
+        // Popular cells
+        if (scenario == 2) {
+            for (auto& pp : popular) {
+                int px = pp.first, py = pp.second;
+                std::vector<int> big_or;
+                for (int k = 0; k < K; k++) big_or.push_back(vm->idX(k, px, py));
+                addClause(big_or);
+            }
+        }
+
+        std::ofstream fout(basename + ".satinput");
+        fout << "p cnf " << vm->getTotalVars() << " " << clauses.size() << "\n";
+        for (auto& c : clauses) {
+            for (int lit : c) fout << lit << ' ';
+            fout << "0\n";
+        }
+        fout.close();
+        std::cerr << "Wrote " << basename << ".satinput : vars=" << vm->getTotalVars() << " clauses=" << clauses.size() << std::endl;
+    }
+
+    void sinz_at_most_k(const std::vector<int>& vs, int k_limit) {
+        int n = vs.size();
+        if (k_limit < 0) { addClause({}); return; }
+        if (n <= k_limit) return;
+        std::vector<std::vector<int>> s(n, std::vector<int>(k_limit + 2, 0));
+        for(int i = 0; i < n; ++i) for (int j = 1; j <= k_limit + 1; ++j) s[i][j] = vm->newAuxVar();
+        addClause({-vs[0], s[0][1]});
+        for (int j = 2; j <= k_limit + 1; ++j) addClause({-s[0][j]});
+        for (int i = 1; i < n; ++i) {
+            addClause({-s[i-1][1], s[i][1]});
+            addClause({-vs[i], s[i][1]});
+            addClause({s[i-1][1], vs[i], -s[i][1]});
+            for (int j = 2; j <= k_limit + 1; ++j) {
+                addClause({-s[i-1][j], s[i][j]});
+                addClause({-s[i-1][j-1], -vs[i], s[i][j]});
+                addClause({s[i-1][j], s[i-1][j-1], -s[i][j]});
+                addClause({s[i-1][j], vs[i], -s[i][j]});
+            }
+        }
+        addClause({-s[n - 1][k_limit + 1]});
+    }
+};
+
+int main(int argc, char** argv) {
+    if (argc < 2) { std::cerr << "Usage: " << argv[0] << " <basename>" << std::endl; return 1; }
+    Encoder enc(argv[1]);
+    if (!enc.readCity()) return 2;
+    enc.encode();
     return 0;
 }

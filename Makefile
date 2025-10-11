@@ -1,13 +1,10 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -O2
+CXXFLAGS = -std=c++11 -Wall -O3
 
 ENCODER_EXE = encoder
 DECODER_EXE = decoder
 
-PYTHON ?= python3
-
 FILE ?= mytest
-VIZFLAGS ?=
 .PHONY: all run clean viz
 
 all: $(ENCODER_EXE) $(DECODER_EXE)
@@ -26,8 +23,8 @@ run: all
 	./run2.sh $(FILE)
 
 clean:
-	rm -f $(ENCODER_EXE) $(DECODER_EXE)
-	rm -f *.satinput *.satoutput *.metromap
+	@rm -f $(ENCODER_EXE) $(DECODER_EXE)
+	@rm -f *.satinput *.satoutput *.metromap *.map *.png
 
 $(ENCODER_EXE): encoder.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
@@ -38,7 +35,8 @@ $(DECODER_EXE): decoder.cpp
 viz:
 	@if [ ! -f "$(FILE).city" ]; then echo "Missing $(FILE).city"; exit 1; fi
 	@if [ ! -f "$(FILE).metromap" ]; then echo "Missing $(FILE).metromap"; exit 1; fi
-	@$(PYTHON) visualizer.py $(FILE).city $(FILE).metromap $(VIZFLAGS)
+	@python visualizer.py $(FILE).city $(FILE).metromap
 
 
-# make run FILE=sample
+# make run FILE=<basename>
+# make viz <basename>

@@ -335,7 +335,7 @@ def main():
     print("Generating visualization...")
     
     base_name = os.path.splitext(input_file)[0]
-    output_image = f"{base_name}_visualization.png"
+    output_image = f"{base_name}_viz.png"
     
     visualize_metro_map(input_data, output_data, output_image, show=True)
 
