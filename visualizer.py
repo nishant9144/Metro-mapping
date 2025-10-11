@@ -2,21 +2,18 @@ import sys
 import os
 import matplotlib
 import matplotlib.patches as patches
-from matplotlib.patches import Circle, Rectangle
+import matplotlib.patheffects as patheffects
+from matplotlib.patches import Circle, Rectangle, FancyArrowPatch
 import numpy as np
-# The visualizer can function without the format_checker, so we'll handle its absence gracefully.
-try:
-    from format_checker import (
-        parse_city as fc_parse_city,
-        parse_metromap as fc_parse_metromap,
-        analyze_constraints as fc_analyze_constraints,
-        short_summary as fc_short_summary,
-        verbose_print as fc_verbose_print,
-    )
-    FORMAT_CHECKER_AVAILABLE = True
-except ImportError:
-    FORMAT_CHECKER_AVAILABLE = False
-    print("(Info) `format_checker.py` not found. Skipping constraint validation.")
+
+from format_checker import (
+    parse_city as fc_parse_city,
+    parse_metromap as fc_parse_metromap,
+    analyze_constraints as fc_analyze_constraints,
+    short_summary as fc_short_summary,
+    verbose_print as fc_verbose_print,
+)
+FORMAT_CHECKER_AVAILABLE = True
 
 
 COLORS = [
@@ -96,6 +93,8 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
     # Import pyplot after backend is selected
     import matplotlib.pyplot as plt
     N, M, K = input_data['N'], input_data['M'], input_data['K']
+    scenario = input_data['scenario']
+    popular_cells = input_data['popular_cells']
     
     # Create figure
     fig_width = max(12, N * 1.0)
@@ -121,31 +120,30 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
         # Draw grid cells
         for y in range(M):
             for x in range(N):
+                # Determine cell color based on whether it's a popular cell
+                if scenario == 2 and (x, y) in popular_cells:
+                    # Popular cells get a distinct background color
+                    facecolor = '#FFE5B4'  # Peach/light orange color
+                    edgecolor = '#FF8C00'  # Dark orange border
+                    linewidth = 3
+                else:
+                    # Regular cells
+                    facecolor = 'white'
+                    edgecolor = '#cccccc'
+                    linewidth = 2
+                
                 # Draw cell background
                 rect = Rectangle((x, y), 1, 1,
-                                linewidth=2,
-                                edgecolor='#cccccc',
-                                facecolor='white')
+                                linewidth=linewidth,
+                                edgecolor=edgecolor,
+                                facecolor=facecolor)
                 ax.add_patch(rect)
                 
+                # Add coordinate label
                 ax.text(x + 0.08, y + 0.15, f'{x},{y}',
                        fontsize=8, color='#444444', alpha=1.0)
-                
-                # Mark popular cells with a star
-                if (x, y) in input_data['popular_cells']:
-                    ax.text(
-                        x + 0.5,
-                        y + 0.5,
-                        '★',
-                        ha='center',
-                        va='center',
-                        fontsize=24,
-                        color='gold',
-                        weight='bold',
-                        path_effects=[matplotlib.patheffects.withStroke(linewidth=1, foreground='black')],
-                    )
 
-        # --- UPDATED: Draw paths as continuous thick lines ---
+        # Draw paths as arrows
         for i, moves in enumerate(output_data['paths']):
             color = COLORS[i % len(COLORS)]
             path_coords = trace_path(input_data['metro_lines'][i]['start'], moves)
@@ -153,15 +151,40 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
             # Convert grid coordinates to plot coordinates (center of the cell)
             plot_coords = [(x + 0.5, y + 0.5) for x, y in path_coords]
             
-            # Unzip coordinates into x and y lists for plotting
-            x_coords, y_coords = zip(*plot_coords)
-            
-            # Plot the entire path as a single, smooth line
-            ax.plot(x_coords, y_coords,
+            # Draw arrow for each segment
+            for j in range(len(plot_coords) - 1):
+                x1, y1 = plot_coords[j]
+                x2, y2 = plot_coords[j + 1]
+                
+                # Calculate direction vector
+                dx = x2 - x1
+                dy = y2 - y1
+                length = np.sqrt(dx**2 + dy**2)
+                
+                # Normalize direction
+                if length > 0:
+                    dx_norm = dx / length
+                    dy_norm = dy / length
+                    
+                    # Offset from start circle (first segment)
+                    if j == 0:
+                        x1 = x1 + dx_norm * 0.18
+                        y1 = y1 + dy_norm * 0.18
+                    
+                    # Offset from end circle (last segment)
+                    if j == len(plot_coords) - 2:
+                        x2 = x2 - dx_norm * 0.18
+                        y2 = y2 - dy_norm * 0.18
+                
+                arrow = FancyArrowPatch(
+                    (x1, y1), (x2, y2),
+                    arrowstyle='-|>',
+                    mutation_scale=12,
+                    linewidth=2,
                     color=color,
-                    linewidth=5,               # Use a thicker line
-                    solid_capstyle='round',    # Creates smooth line joints
-                    zorder=5)                  # Draw lines below the markers
+                    zorder=5
+                )
+                ax.add_patch(arrow)
 
         # Draw start and end points on top
         for i, line in enumerate(input_data['metro_lines']):
@@ -170,31 +193,31 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
             color = COLORS[i % len(COLORS)]
             
             # Start point - filled circle with white border
-            start_circle = Circle((sx + 0.5, sy + 0.5), 0.22, # Larger radius
+            start_circle = Circle((sx + 0.5, sy + 0.5), 0.15,
                                  facecolor=color,
                                  edgecolor='white',
-                                 linewidth=3, # Thicker border
+                                 linewidth=2,
                                  zorder=10)
             ax.add_patch(start_circle)
             
             # Add 'S' label
             ax.text(sx + 0.5, sy + 0.5, 'S',
                    ha='center', va='center',
-                   fontsize=10, color='white', weight='bold', # Larger font
+                   fontsize=7, color='white', weight='bold',
                    zorder=11)
             
             # End point - filled circle with white border
-            end_circle = Circle((ex + 0.5, ey + 0.5), 0.22, # Larger radius
+            end_circle = Circle((ex + 0.5, ey + 0.5), 0.15,
                                facecolor=color,
                                edgecolor='white',
-                               linewidth=3, # Thicker border
+                               linewidth=2,
                                zorder=10)
             ax.add_patch(end_circle)
             
             # Add 'E' label
             ax.text(ex + 0.5, ey + 0.5, 'E',
                    ha='center', va='center',
-                   fontsize=10, color='white', weight='bold', # Larger font
+                   fontsize=7, color='white', weight='bold',
                    zorder=11)
         
         # Set axis properties
@@ -215,8 +238,8 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
         ax.set_ylabel('Row (Y-axis)', fontsize=12, weight='bold')
         
         # Title
-        title_text = f'Metro Map Solution\nGrid: {N}×{M} | Lines: {K} | Max Turns: {input_data["J"]}'
-        if input_data['scenario'] == 2:
+        title_text = f'Metro Map Solution (Scenario {scenario})\nGrid: {N}×{M} | Lines: {K} | Max Turns: {input_data["J"]}'
+        if scenario == 2:
             title_text += f' | Popular Cells: {input_data["P"]}'
         
         ax.set_title(title_text, 
@@ -228,8 +251,15 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
                           label=f'Line {i}') for i in range(K)
         ]
         
+        # Add popular cell legend item for Scenario 2
+        if scenario == 2 and len(popular_cells) > 0:
+            legend_elements.append(
+                patches.Patch(facecolor='#FFE5B4', edgecolor='#FF8C00', 
+                             linewidth=2, label='Popular Cell')
+            )
+        
         legend = ax.legend(handles=legend_elements, 
-                          title="Metro Lines",
+                          title="Metro Lines" + (" & Cells" if scenario == 2 else ""),
                           loc='upper left', 
                           bbox_to_anchor=(1.02, 1),
                           fontsize=10,
@@ -237,7 +267,9 @@ def visualize_metro_map(input_data, output_data, output_filename, show=True):
         legend.get_frame().set_linewidth(1.5)
         legend.get_frame().set_edgecolor('black')
         
-    plt.tight_layout(rect=[0, 0, 0.85, 1])
+    plt.tight_layout(rect=(0, 0, 0.85, 1))
+    plt.savefig(output_filename, dpi=150, bbox_inches='tight')
+    print(f"Visualization saved to: {output_filename}")
 
     if show:
         plt.show()

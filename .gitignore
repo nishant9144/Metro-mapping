@@ -11,3 +11,4 @@ __pycache__/
 encoder
 decoder
 
+*.png
