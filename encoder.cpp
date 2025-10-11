@@ -2,109 +2,191 @@
 #include <vector>
 #include <fstream>
 #include <string>
-#include <algorithm>
-#include <cmath>
+#include <numeric>
 
-// Helper structure to represent a point
-struct Point {
-    int x, y;
+class VarManager {
+private:
+    int N, M, K, T_max;
+    int var_count = 0;
+    int at_offset;
+    int occupies_offset;
+    int move_h_offset;
+    int move_v_offset;
+    int turn_offset;
+    int turn_sum_offset;
+public:
+    VarManager(int n, int m, int k, int t_max) : N(n), M(m), K(k), T_max(t_max) {
+        at_offset = 1;
+        occupies_offset = at_offset + K * N * M * (T_max + 1);
+        move_h_offset = occupies_offset + K * N * M;
+        move_v_offset = move_h_offset + K * (T_max);
+        turn_offset = move_v_offset + K * (T_max);
+        turn_sum_offset = turn_offset + K * (T_max);
+        var_count = turn_sum_offset;
+    }
+    int at(int k, int x, int y, int t) const {
+        return at_offset + k * (N * M * (T_max + 1)) + y * (N * (T_max + 1)) + x * (T_max + 1) + t;
+    }
+    int occupies(int k, int x, int y) const {
+        return occupies_offset + k * (N * M) + y * N + x;
+    }
+    int move_h(int k, int t) const { return move_h_offset + k * T_max + t; }
+    int move_v(int k, int t) const { return move_v_offset + k * T_max + t; }
+    int turn(int k, int t) const { return turn_offset + k * T_max + t; }
+    
+    int turn_sum(int k, int t, int j) const {
+        return turn_sum_offset + k * (T_max * 10) + t * 10 + j;
+    }
+    int total_vars() const { 
+        return turn_sum_offset + K * T_max * 10;
+    }
 };
-
-// Represents a path segment (a straight line)
-using PathSegment = std::vector<Point>;
-
-// Represents a full path (a collection of segments)
-using Path = std::vector<Point>;
 
 class Encoder {
 private:
-    // Problem parameters
-    int N, M, K, J, P;
-    int scenario;
-    std::vector<std::pair<Point, Point>> lines;
-    std::vector<Point> popular_cells;
-
-    // SAT related variables
-    int var_count = 0;
+    int N, M, K, J, P, scenario, T_max;
+    std::vector<std::pair<int, int>> starts, ends;
+    std::vector<std::pair<int, int>> popular_cells;
     std::vector<std::vector<int>> clauses;
     
-    // Variable mapping: P_k,x,y is true if line k is at (x,y)
-    // We use a 3D vector for easy lookup.
-    std::vector<std::vector<std::vector<int>>> p_vars; 
-
-    // Variable mapping for path choices for each line
-    std::vector<std::vector<int>> choice_vars;
-    std::vector<std::vector<Path>> possible_paths;
-
-
 public:
-    Encoder() : N(0), M(0), K(0), J(0), P(0), scenario(0), var_count(0) {}
-
     void readInput(const std::string& filename) {
         std::ifstream inFile(filename);
         inFile >> scenario;
-        inFile >> N >> M >> K >> J;
-        if (scenario == 2) {
-            inFile >> P;
+        if (scenario == 1) {
+            inFile >> N >> M >> K >> J;
+        } else {
+            inFile >> N >> M >> K >> J >> P;
         }
-
-        lines.resize(K);
+        starts.resize(K);
+        ends.resize(K);
         for (int k = 0; k < K; ++k) {
-            inFile >> lines[k].first.x >> lines[k].first.y >> lines[k].second.x >> lines[k].second.y;
+            inFile >> starts[k].first >> starts[k].second >> ends[k].first >> ends[k].second;
         }
-
         if (scenario == 2) {
             popular_cells.resize(P);
             for (int p = 0; p < P; ++p) {
-                inFile >> popular_cells[p].x >> popular_cells[p].y;
+                inFile >> popular_cells[p].first >> popular_cells[p].second;
             }
         }
     }
 
     void generateClauses() {
-        // --- 1. Initialize variables ---
-        // Variable P_k,x,y is true if line k occupies cell (x, y)
-        p_vars.resize(K, std::vector<std::vector<int>>(N, std::vector<int>(M)));
+        T_max = (N - 1) + (M - 1) + 2 * J;
+        VarManager vars(N, M, K, T_max);
+
+        // C1: Start and End constraints
         for (int k = 0; k < K; ++k) {
-            for (int i = 0; i < N; ++i) {
-                for (int j = 0; j < M; ++j) {
-                    p_vars[k][i][j] = ++var_count;
+            clauses.push_back({vars.at(k, starts[k].first, starts[k].second, 0)});
+            clauses.push_back({vars.at(k, ends[k].first, ends[k].second, T_max)});
+        }
+        // C2 & C3: Path validity and transitions
+        for (int k = 0; k < K; ++k) {
+            for (int t = 0; t <= T_max; ++t) {
+                std::vector<int> at_least_one_pos;
+                for (int x = 0; x < N; ++x) { for (int y = 0; y < M; ++y) at_least_one_pos.push_back(vars.at(k, x, y, t)); }
+                clauses.push_back(at_least_one_pos);
+                for (size_t i = 0; i < at_least_one_pos.size(); ++i) {
+                    for (size_t j = i + 1; j < at_least_one_pos.size(); ++j) {
+                        clauses.push_back({-at_least_one_pos[i], -at_least_one_pos[j]});
+                    }
+                }
+                if (t < T_max) {
+                    for (int x = 0; x < N; ++x) {
+                        for (int y = 0; y < M; ++y) {
+                            std::vector<int> possible_next_pos;
+                            possible_next_pos.push_back(vars.at(k, x, y, t + 1));
+                            if (x > 0) possible_next_pos.push_back(vars.at(k, x - 1, y, t + 1));
+                            if (x < N - 1) possible_next_pos.push_back(vars.at(k, x + 1, y, t + 1));
+                            if (y > 0) possible_next_pos.push_back(vars.at(k, x, y - 1, t + 1));
+                            if (y < M - 1) possible_next_pos.push_back(vars.at(k, x, y + 1, t + 1));
+                            std::vector<int> clause = possible_next_pos;
+                            clause.push_back(-vars.at(k, x, y, t));
+                            clauses.push_back(clause);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // C4: Define Occupies variables and add STRONG collision constraint
+        for (int k = 0; k < K; ++k) {
+            for (int x = 0; x < N; ++x) {
+                for (int y = 0; y < M; ++y) {
+                    std::vector<int> at_any_time_clause;
+                    at_any_time_clause.push_back(-vars.occupies(k,x,y));
+                    for (int t = 0; t <= T_max; ++t) {
+                        clauses.push_back({-vars.at(k,x,y,t), vars.occupies(k,x,y)});
+                        at_any_time_clause.push_back(vars.at(k,x,y,t));
+                    }
+                    clauses.push_back(at_any_time_clause);
+                }
+            }
+        }
+        for (int x = 0; x < N; ++x) {
+            for (int y = 0; y < M; ++y) {
+                for (int k1 = 0; k1 < K; ++k1) {
+                    for (int k2 = k1 + 1; k2 < K; ++k2) {
+                        clauses.push_back({-vars.occupies(k1, x, y), -vars.occupies(k2, x, y)});
+                    }
                 }
             }
         }
 
-        possible_paths.resize(K);
-        choice_vars.resize(K);
-
-        // --- 2. Generate all valid paths for each line and create choice variables ---
-        for (int k = 0; k < K; ++k) {
-            generatePathsForLine(k);
-            for (size_t i = 0; i < possible_paths[k].size(); ++i) {
-                choice_vars[k].push_back(++var_count);
+        // C5: Turn Constraints
+        define_turn_clauses(vars);
+        
+        // C6: Popular Cells (Scenario 2)
+        if (scenario == 2) {
+            for (const auto& cell : popular_cells) {
+                std::vector<int> popular_clause;
+                for (int k = 0; k < K; ++k) {
+                    popular_clause.push_back(vars.occupies(k, cell.first, cell.second));
+                }
+                clauses.push_back(popular_clause);
             }
         }
+    }
 
-        // --- 3. Add clauses ---
+    // The signature below is the important part - it now takes a const VarManager&
+    void define_turn_clauses(const VarManager& vars) {
         for (int k = 0; k < K; ++k) {
-            // Clause: Each line must choose exactly one path
-            addExactlyOneChoiceClause(k);
-
-            // Clause: If a path is chosen, all its cells must be active
-            addPathImplicationClauses(k);
-        }
-
-        // Clause: A cell can be occupied by at most one line [cite: 11]
-        addCellExclusivityClauses();
-
-        // Clause (Scenario 2): Popular cells must be visited [cite: 53]
-        if (scenario == 2) {
-            addPopularCellClauses();
+            for (int t = 0; t < T_max; ++t) {
+                if (t > 0) {
+                    int m_h_prev = vars.move_h(k, t-1), m_v_prev = vars.move_v(k, t-1);
+                    int m_h_curr = vars.move_h(k, t),   m_v_curr = vars.move_v(k, t);
+                    int turn_curr = vars.turn(k, t);
+                    clauses.push_back({-m_h_prev, -m_v_curr, turn_curr});
+                    clauses.push_back({-m_v_prev, -m_h_curr, turn_curr});
+                }
+                for (int x=0; x<N; ++x){
+                    for (int y=0; y<M; ++y){
+                        if (x < N - 1) clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x+1,y,t+1), vars.move_h(k,t)});
+                        if (x > 0)     clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x-1,y,t+1), vars.move_h(k,t)});
+                        if (y < M-1)   clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x,y+1,t+1), vars.move_v(k,t)});
+                        if (y > 0)     clauses.push_back({-vars.at(k,x,y,t), -vars.at(k,x,y-1,t+1), vars.move_v(k,t)});
+                    }
+                }
+            }
+            for (int t = 1; t < T_max; ++t) {
+                for (int j = 1; j <= J + 1; ++j) {
+                    int s_prev_j = (t > 1) ? vars.turn_sum(k, t - 1, j) : 0;
+                    int s_prev_j_minus_1 = (t > 1 && j > 1) ? vars.turn_sum(k, t - 1, j - 1) : 0;
+                    int turn_t = vars.turn(k, t);
+                    int s_curr_j = vars.turn_sum(k, t, j);
+                    if (t > 1) clauses.push_back({-s_prev_j, s_curr_j});
+                    if (t > 1 && j > 1) clauses.push_back({-s_prev_j_minus_1, -turn_t, s_curr_j});
+                    if (j==1) clauses.push_back({-turn_t, s_curr_j});
+                }
+            }
+            clauses.push_back({-vars.turn_sum(k, T_max-1, J+1)});
         }
     }
 
     void writeOutput(const std::string& filename) {
+        VarManager vars(N, M, K, T_max);
         std::ofstream outFile(filename);
-        outFile << "p cnf " << var_count << " " << clauses.size() << std::endl;
+        outFile << "p cnf " << vars.total_vars() << " " << clauses.size() << std::endl;
         for (const auto& clause : clauses) {
             for (int literal : clause) {
                 outFile << literal << " ";
@@ -112,140 +194,14 @@ public:
             outFile << "0" << std::endl;
         }
     }
-
-private:
-    // Generates all paths with at most J turns for a given line k
-    void generatePathsForLine(int k) {
-        Point start = lines[k].first;
-        Point end = lines[k].second;
-
-        // We use a recursive helper function to find paths
-        findPathsRecursive(k, {start}, 0, (start.x == end.x)); 
-    }
-
-    void findPathsRecursive(int k, Path current_path, int turns, bool last_move_was_vertical) {
-        Point current_pos = current_path.back();
-        Point end_pos = lines[k].second;
-
-        if (current_pos.x == end_pos.x && current_pos.y == end_pos.y) {
-            possible_paths[k].push_back(current_path);
-            return;
-        }
-
-        // Try moving horizontally
-        if (current_pos.x != end_pos.x) {
-            int new_turns = turns + (last_move_was_vertical ? 1 : 0);
-            if (new_turns <= J) {
-                Path new_path = current_path;
-                int dx = (end_pos.x > current_pos.x) ? 1 : -1;
-                for(int x = current_pos.x + dx; x != end_pos.x + dx; x += dx) {
-                    new_path.push_back({x, current_pos.y});
-                }
-                new_path.push_back({end_pos.x, current_pos.y});
-                findPathsRecursive(k, new_path, new_turns, false);
-            }
-        }
-
-        // Try moving vertically
-        if (current_pos.y != end_pos.y) {
-            int new_turns = turns + (!last_move_was_vertical ? 1 : 0);
-             if (new_turns <= J) {
-                Path new_path = current_path;
-                int dy = (end_pos.y > current_pos.y) ? 1 : -1;
-                for (int y = current_pos.y + dy; y != end_pos.y + dy; y += dy) {
-                    new_path.push_back({current_pos.x, y});
-                }
-                new_path.push_back({current_pos.x, end_pos.y});
-                findPathsRecursive(k, new_path, new_turns, true);
-             }
-        }
-    }
-
-
-    // At least one choice must be true: (C1 v C2 v ... v Cn)
-    // At most one choice is true: (-Ci v -Cj) for all i != j
-    void addExactlyOneChoiceClause(int k) {
-        // At least one path must be chosen
-        if (!choice_vars[k].empty()) {
-            clauses.push_back(choice_vars[k]);
-        } else {
-            // No possible paths for this line, so it's impossible. Add an empty clause for UNSAT.
-             clauses.push_back({});
-        }
-
-        // At most one path can be chosen
-        for (size_t i = 0; i < choice_vars[k].size(); ++i) {
-            for (size_t j = i + 1; j < choice_vars[k].size(); ++j) {
-                clauses.push_back({-choice_vars[k][i], -choice_vars[k][j]});
-            }
-        }
-    }
-
-    // Adds clauses: Choice_i => P_k,x,y for all (x,y) on path i
-    // This is equivalent to: (-Choice_i v P_k,x,y)
-    void addPathImplicationClauses(int k) {
-        for (size_t i = 0; i < possible_paths[k].size(); ++i) {
-            int choice_var = choice_vars[k][i];
-            const auto& path = possible_paths[k][i];
-            
-            // A path is a sequence of points. We need to fill in the cells between them.
-            for (size_t j = 0; j < path.size() - 1; ++j) {
-                Point p1 = path[j];
-                Point p2 = path[j+1];
-                // Vertical segment
-                if (p1.x == p2.x) {
-                    for (int y = std::min(p1.y, p2.y); y <= std::max(p1.y, p2.y); ++y) {
-                        clauses.push_back({-choice_var, p_vars[k][p1.x][y]});
-                    }
-                } 
-                // Horizontal segment
-                else if (p1.y == p2.y) {
-                    for (int x = std::min(p1.x, p2.x); x <= std::max(p1.x, p2.x); ++x) {
-                        clauses.push_back({-choice_var, p_vars[k][x][p1.y]});
-                    }
-                }
-            }
-        }
-    }
-
-    // Adds clauses: (-P_k1,x,y v -P_k2,x,y) for all k1 != k2
-    void addCellExclusivityClauses() {
-        for (int i = 0; i < N; ++i) {
-            for (int j = 0; j < M; ++j) {
-                for (int k1 = 0; k1 < K; ++k1) {
-                    for (int k2 = k1 + 1; k2 < K; ++k2) {
-                        clauses.push_back({-p_vars[k1][i][j], -p_vars[k2][i][j]});
-                    }
-                }
-            }
-        }
-    }
-
-    // Adds clause: (P_0,px,py v P_1,px,py v ... v P_K-1,px,py) for each popular cell
-    void addPopularCellClauses() {
-        for (const auto& cell : popular_cells) {
-            std::vector<int> clause;
-            for (int k = 0; k < K; ++k) {
-                clause.push_back(p_vars[k][cell.x][cell.y]);
-            }
-            clauses.push_back(clause);
-        }
-    }
 };
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cerr << "Usage: ./encoder <test_name>" << std::endl;
-        return 1;
-    }
+    if (argc != 2) return 1;
     std::string test_name = argv[1];
-    std::string city_file = test_name + ".city";
-    std::string satinput_file = test_name + ".satinput";
-
     Encoder encoder;
-    encoder.readInput(city_file);
+    encoder.readInput(test_name + ".city");
     encoder.generateClauses();
-    encoder.writeOutput(satinput_file);
-
+    encoder.writeOutput(test_name + ".satinput");
     return 0;
 }
