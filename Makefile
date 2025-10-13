@@ -24,7 +24,7 @@ run: all
 
 clean:
 	@rm -f $(ENCODER_EXE) $(DECODER_EXE)
-	@rm -f *.satinput *.satoutput *.metromap *.map *.png
+	@rm -f *.satinput *.satoutput *.metromap *.map *.png *.log
 
 $(ENCODER_EXE): encoder.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<

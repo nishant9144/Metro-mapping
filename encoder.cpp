@@ -117,7 +117,8 @@ struct Encoder {
         for (int k = 0; k < K; ++k) {
             int manhattan_dist = std::abs(starts[k].first - ends[k].first) + std::abs(starts[k].second - ends[k].second);
             long long lk = manhattan_dist + 2 * J + 4;
-            L_k_values.push_back(std::min((long long)N * M, lk));
+            long long lk = std::min((long long)N * M, (J+1) * std::max(N, M) + 2LL);
+            L_k_values.push_back(lk);
         }
 
         vm = new VarManager(N, M, K, L_k_values);
@@ -127,7 +128,6 @@ struct Encoder {
             int ex = ends[k].first;
             int ey = ends[k].second;
 
-            // Link occupation vars (X) with step-position vars (P)
             for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
                 int xid = vm->idX(k, x, y);
                 std::vector<int> p_at_cell;
@@ -139,27 +139,22 @@ struct Encoder {
                 for (int p_var : p_at_cell) addClause({-p_var, xid});
             }
 
-            // Start constraint
             addClause({vm->idP(k, starts[k].first, starts[k].second, 0)});
 
-            // *** CORRECTED ***: Robust `ReachedEnd` Termination Constraint
             std::vector<int> reached_end_vars;
             for(long long t=0; t<L_k; ++t) reached_end_vars.push_back(vm->idReachedEnd(k, (int)t));
             addExactlyOne(reached_end_vars);
 
             for (long long t = 0; t < L_k; ++t) {
                 int rend_t = vm->idReachedEnd(k, (int)t);
-                // If terminates at t, it must be at the end cell.
+                
                 addClause({-rend_t, vm->idP(k, ex, ey, (int)t)});
-                // If terminates at t, the path must have been active at t.
-                addClause({-rend_t, vm->idU(k, (int)t)});
-                // If terminates at t, it must NOT be active at t+1.
+                
                 if (t < L_k - 1) {
                     addClause({-rend_t, -vm->idU(k, (int)(t + 1))});
                 }
             }
 
-            // Uniqueness and Simplicity Constraints
             for (long long t = 0; t < L_k; t++) {
                 std::vector<int> cellIds;
                 cellIds.reserve(N * M);
@@ -173,7 +168,6 @@ struct Encoder {
                 addAtMostOne(timeIds);
             }
             
-            // Path Continuity and Helper Variable Definitions (U, H, Z)
             for (long long t = 0; t < L_k; t++) {
                 int uid = vm->idU(k, (int)t);
                 std::vector<int> p_or = {-uid};
@@ -219,14 +213,12 @@ struct Encoder {
             sinz_at_most_k(turn_vars, std::max(0, J));
         }
 
-        // Mutual exclusion
         for (int x = 0; x < N; x++) for (int y = 0; y < M; y++) {
             std::vector<int> lineIds;
             for (int k = 0; k < K; k++) lineIds.push_back(vm->idX(k,x,y));
             addAtMostOne(lineIds);
         }
 
-        // Popular cells
         if (scenario == 2) {
             for (auto& pp : popular) {
                 int px = pp.first, py = pp.second;
