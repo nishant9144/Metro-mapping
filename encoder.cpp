@@ -117,8 +117,7 @@ struct Encoder {
         for (int k = 0; k < K; ++k) {
             int manhattan_dist = std::abs(starts[k].first - ends[k].first) + std::abs(starts[k].second - ends[k].second);
             long long lk = manhattan_dist + 2 * J + 4;
-            long long lk = std::min((long long)N * M, (J+1) * std::max(N, M) + 2LL);
-            L_k_values.push_back(lk);
+            L_k_values.push_back(std::min((long long)N * M, lk));
         }
 
         vm = new VarManager(N, M, K, L_k_values);
