@@ -16,7 +16,7 @@ Features:
 
 Usage:
     # Generate 5 guaranteed SATISFIABLE cases for J=4
-    python3 test_case_generator.py --N 20 --M 20 --K 5 --J 4 --mode constructive --count 5
+    python3 testcase_gen.py --N 20 --M 20 --K 5 --J 4 --mode constructive --count 5
 
     # Generate a deliberately UNSATISFIABLE case for J=0
     python3 test_case_generator.py --N 10 --M 10 --K 4 --J 0 --mode unsat --output impossible.city
@@ -144,71 +144,71 @@ def generate_random_instance(N, M, K, J, P):
     return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': P}
 
 
-def generate_unsat_instance(N, M, K, J, P):
-    """
-    General-purpose UNSAT generator for Metro Map Planning.
-    - For J=0: Misalign endpoints for at least one line.
-    - For J=1: Crossing gadget.
-    - For J>=2: Overpack or place impossible-to-cover popular cells.
-    """
-    import random, sys
-    from math import ceil
+def generate_unsat_instance(N, M, K, J, scenario=1, P=0):
+    lines = []
+    popular = []
 
-    all_cells = [(x, y) for x in range(N) for y in range(M)]
-    metro_lines = []
-    popular_cells = []
+    # Prefer the 2x2 crossing pattern if we have room and >=2 lines
+    if N >= 2 and M >= 2 and K >= 2:
+        # Choose a 2x2 block anchored at (0,0); you can randomize the anchor if you like
+        x, y = 0, 0
+        # Two lines that must collide in the 2x2
+        lines.append({'start': (x, y), 'end': (x+1, y+1)})  # line 0: (0,0) -> (1,1)
+        lines.append({'start': (x+1, y), 'end': (x, y+1)})  # line 1: (1,0) -> (0,1)
 
-    # 1. J=0: Basic misaligned gadget (guaranteed UNSAT)
-    if J == 0:
-        s = (0, 0)
-        e = (1, 1)
-        used = {s, e}
-        extra_points = [p for p in all_cells if p not in used]
-        for i in range(K-1):
-            if len(extra_points) < 2: break
-            s2, e2 = extra_points[:2]
-            metro_lines.append({'start': s2, 'end': e2})
-            extra_points = extra_points[2:]
-        # First line is impossible
-        metro_lines = [{'start': s, 'end': e}] + metro_lines
-        # Popular cells: pick unused cells if possible
-        pool = [p for p in all_cells if p not in used]
-        popular_cells = random.sample(pool, min(len(pool), P)) if P else []
-        return {'metro_lines': metro_lines, 'popular_cells': popular_cells}
+        # Any extra lines: keep them trivial and out of the 2x2 block
+        cx, cy = 0, 0
+        for _ in range(2, K):
+            # Find an aligned pair elsewhere (try columns first)
+            found = False
+            for xx in range(0, N):
+                for yy0 in range(0, M):
+                    for yy1 in range(0, M):
+                        if yy0 != yy1 and (xx > 1 or yy0 > 1) and (xx > 1 or yy1 > 1):
+                            lines.append({'start': (xx, yy0), 'end': (xx, yy1)})
+                            found = True
+                            break
+                    if found: break
+                if found: break
+            if not found:
+                # Fallback: reuse safe aligned pairs within bounds
+                lines.append({'start': (0, M-1), 'end': (0, max(0, M-2))})
 
-    # 2. Overpack for any J
-    # Minimum path per line is 2 (start, end). More realistically, ~manhattan+1.
-    # Let's force K*(J+2) > N*M for UNSAT
-    min_cells_per_line = min(N, M) if J == 1 else (J+2)
-    max_possible_lines = (N*M) // min_cells_per_line
-    if K > max_possible_lines:
-        # Can't fit: place random unique endpoints.
-        points = random.sample(all_cells, 2*K)
-        for i in range(K):
-            metro_lines.append({'start': points[2*i], 'end': points[2*i+1]})
-        # Popular cells: all other unused cells
-        used = set(points)
-        pool = [p for p in all_cells if p not in used]
-        popular_cells = random.sample(pool, min(len(pool), P)) if P else []
-        return {'metro_lines': metro_lines, 'popular_cells': popular_cells}
+        if scenario == 2 and P > 0:
+            # Make it even harder: require the two hinge cells as popular
+            # In 2x2, the "hinge" cells are (x, y+1) and (x+1, y)
+            pcs = [(x, y+1), (x+1, y)]
+            popular = pcs[:P] if P <= 2 else pcs + [ (min(N-1,2), min(M-1,2)) ]*(P-2)
 
-    # 3. Scenario 2: Impossible coverage
-    # Pick popular cells outside all possible paths.
-    points = random.sample(all_cells, 2*K)
-    metro_lines = [{'start': points[2*i], 'end': points[2*i+1]} for i in range(K)]
-    # Let's pick the top-left K cells as the only line start/ends; put all popular cells in the bottom right block
-    coverable = set()
-    for line in metro_lines:
-        s, e = line['start'], line['end']
-        # All cells along straight, and up to J bends (overestimate coverage)
-        coverable.add(s); coverable.add(e)
-    # Pick P popular cells from cells not in coverable (guaranteed to be uncovered)
-    pool = [p for p in all_cells if p not in coverable]
-    if len(pool) < P:
-        # If not enough, repeat some or fill with arbitrary
-        pool = all_cells[:]
-    popular_cells = random.sample(pool, min(len(pool), P)) if P else []
-    return {'metro_lines': metro_lines, 'popular_cells': popular_cells}
+        return {"metro_lines": lines, "popular_cells": popular, "P": len(popular)}
+
+    # Otherwise, force J = 0 contradiction — single line, non-aligned endpoints
+    # If J is not 0, this still tends to be hard; but we make it UNSAT by scenario 2 popular cell
+    if K < 1:
+        K = 1
+    sx, sy, ex, ey = 0, 0, 1 if N > 1 else 0, 1 if M > 1 else 0
+    if N <= 1 or M <= 1 or (sx == ex or sy == ey):
+        # Try the other diagonal if needed
+        ex, ey = min(N-1, 1), 0
+        if sx == ex or sy == ey:
+            raise ValueError("Grid too small to force UNSAT; need at least 2x2.")
+
+    lines = [{'start': (sx, sy), 'end': (ex, ey)}]
+    # Pad remaining lines with harmless aligned segments
+    for _ in range(1, K):
+        if N >= 2:
+            lines.append({'start': (0, M-1), 'end': (1, M-1)})  # horizontal at bottom row
+        else:
+            lines.append({'start': (0, 0), 'end': (0, max(0, M-1))})  # vertical fallback
+
+    if scenario == 2:
+        # One popular cell unreachable with J=0: pick a cell not aligned with any line endpoints
+        # Choose center-ish if possible
+        px, py = (N-1)//2, (M-1)//2
+        popular = [(px, py)]
+        return {"metro_lines": lines, "popular_cells": popular, "P": 1}
+
+    return {"metro_lines": lines, "popular_cells": [], "P": 0}
 
 
 
@@ -280,4 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
