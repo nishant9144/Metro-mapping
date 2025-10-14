@@ -5,7 +5,7 @@
 #include <unordered_set>
 using namespace std;
 
-static const int DIRS = 4;
+const int DIRS = 4;
 const int DX[4] = {1,0,-1,0};
 const int DY[4] = {0,1,0,-1};
 const char DIR_LETTER[4] = {'R','D','L','U'};
@@ -18,7 +18,7 @@ struct City {
     vector<pair<int,int>> popular;
 };
 
-static vector<string> tokenize_file(const string &path) {
+vector<string> tokenize_file(const string &path) {
     ifstream fin(path);
     if (!fin) { cerr << "Error: cannot open " << path << "\n"; exit(1); }
     vector<string> tokens;
@@ -33,7 +33,7 @@ static vector<string> tokenize_file(const string &path) {
     return tokens;
 }
 
-static City parse_city(const string &path) {
+City parse_city(const string &path) {
     vector<string> tokens = tokenize_file(path);
     if (tokens.empty()) { cerr << "Error: empty or invalid city file\n"; exit(1); }
     size_t idx = 0;
@@ -96,7 +96,7 @@ pair<bool, unordered_set<int>> parse_minisat(const string &path) {
     if (lines.empty()) { cerr << "Error: empty minisat output\n"; exit(1); }
     if (lines[0].find("UNSAT") != string::npos || lines[0].find("UNSATISFIABLE") != string::npos) return {false, {}};
     unordered_set<int> trues;
-    trues.reserve(65536); // small hint; will be resized properly below
+    trues.reserve(65536);
     for (auto &ln : lines) {
         stringstream ss(ln);
         string tok;

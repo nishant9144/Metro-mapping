@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-
-"""
-Test Case Generator for Assignment 3: Metro Map Planning (Full Strength Version)
-
-This script generates problem instances (.city files) with multiple modes.
-
-Features:
-- Modes:
-    constructive: Guaranteed SAT. Picks start/end points, then finds a valid path.
-    random:       Random start/end points (may be SAT or UNSAT).
-    unsat:        Deliberately UNSAT (e.g., J=0 with non-aligned endpoints).
-- Supports any arbitrary value for J in constructive mode via a BFS pathfinder.
-- Batch generation with seeding for reproducible test suites.
-- Output organization with prefixes and directories.
-
-Usage:
-    # Generate 5 guaranteed SATISFIABLE cases for J=4
-    python3 testcase_gen.py --N 20 --M 20 --K 5 --J 4 --mode constructive --count 5
-
-    # Generate a deliberately UNSATISFIABLE case for J=0
-    python3 test_case_generator.py --N 10 --M 10 --K 4 --J 0 --mode unsat --output impossible.city
-"""
-
 import argparse
 import os
 import random
@@ -36,9 +13,7 @@ def find_path_bfs(N, M, J, grid, start, end):
     if start == end:
         return [start]
 
-    # State: (position, path_list, turns, last_direction)
     queue = deque([(start, [start], 0, None)])
-    # Visited: key=(position, turns, last_direction), value=path_length
     visited = {(start, 0, None): 0}
 
     while queue:
@@ -53,8 +28,6 @@ def find_path_bfs(N, M, J, grid, start, end):
             if not (0 <= nx < N and 0 <= ny < M):
                 continue
 
-            # Path can't cross itself or other existing paths
-            # The destination 'end' is the only previously occupied cell we can enter.
             if grid[nx][ny] and (nx, ny) != end:
                 continue
 
@@ -64,9 +37,7 @@ def find_path_bfs(N, M, J, grid, start, end):
                 continue
 
             new_path = path + [(nx, ny)]
-            
-            # Pruning: if we've reached this cell before with fewer or equal turns and a shorter path, skip.
-            visited_key = ( (nx, ny), new_turns, direction )
+            visited_key = ((nx, ny), new_turns, direction)
             if visited_key in visited and visited[visited_key] <= len(new_path):
                 continue
             
@@ -74,6 +45,20 @@ def find_path_bfs(N, M, J, grid, start, end):
             queue.append(((nx, ny), new_path, new_turns, direction))
             
     return None
+
+
+def compute_reachable_cells(N, M, J, start, end):
+    """
+    Computes all cells reachable from start to end with at most J turns.
+    Returns a set of coordinates, or empty set if no path exists.
+    """
+    grid = [[False for _ in range(M)] for _ in range(N)]
+    path = find_path_bfs(N, M, J, grid, start, end)
+    
+    if path is None:
+        return set()
+    
+    return set(path)
 
 
 def generate_satisfiable_instance(N, M, K, J, P):
@@ -86,40 +71,35 @@ def generate_satisfiable_instance(N, M, K, J, P):
     
     for _ in range(K):
         found_path = None
-        # Try to find a pair (s, e) and a valid route between them
-        for _ in range(200): # Limit attempts to avoid infinite loops
-            
-            available_points = [(x,y) for x in range(N) for y in range(M) if not grid[x][y]]
+        for _ in range(200):
+            available_points = [(x, y) for x in range(N) for y in range(M) if not grid[x][y]]
             if len(available_points) < 2:
-                break # Not enough space
+                break
             
             start, end = random.sample(available_points, 2)
-            
-            # Temporarily mark end as available for pathfinding
             grid[end[0]][end[1]] = False
             path = find_path_bfs(N, M, J, grid, start, end)
-            grid[end[0]][end[1]] = True # Restore its state
+            grid[end[0]][end[1]] = True
             
             if path:
                 found_path = path
                 break
 
         if not found_path:
-            print(f"Error: Failed to construct a satisfiable instance. Try a larger grid or fewer lines.", file=sys.stderr)
+            print(f"Error: Failed to construct a satisfiable instance.", file=sys.stderr)
             sys.exit(1)
 
         metro_lines.append({'start': found_path[0], 'end': found_path[-1]})
         for x, y in found_path:
             grid[x][y] = True
-            all_path_cells.add((x,y))
+            all_path_cells.add((x, y))
 
-    # --- Popular Cells ---
     start_end_points = {p for line in metro_lines for p in (line['start'], line['end'])}
     possible_popular = list(all_path_cells - start_end_points)
     if len(possible_popular) < P:
-        print(f"Warning: Could only find {len(possible_popular)} valid spots for {P} popular cells. Reducing P.", file=sys.stderr)
+        print(f"Warning: Reducing P from {P} to {len(possible_popular)}.", file=sys.stderr)
         P = len(possible_popular)
-    popular_cells = random.sample(possible_popular, P)
+    popular_cells = random.sample(possible_popular, P) if P > 0 else []
 
     return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': P}
 
@@ -144,72 +124,152 @@ def generate_random_instance(N, M, K, J, P):
     return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': P}
 
 
-def generate_unsat_instance(N, M, K, J, scenario=1, P=0):
-    lines = []
-    popular = []
-
-    # Prefer the 2x2 crossing pattern if we have room and >=2 lines
-    if N >= 2 and M >= 2 and K >= 2:
-        # Choose a 2x2 block anchored at (0,0); you can randomize the anchor if you like
-        x, y = 0, 0
-        # Two lines that must collide in the 2x2
-        lines.append({'start': (x, y), 'end': (x+1, y+1)})  # line 0: (0,0) -> (1,1)
-        lines.append({'start': (x+1, y), 'end': (x, y+1)})  # line 1: (1,0) -> (0,1)
-
-        # Any extra lines: keep them trivial and out of the 2x2 block
-        cx, cy = 0, 0
-        for _ in range(2, K):
-            # Find an aligned pair elsewhere (try columns first)
-            found = False
-            for xx in range(0, N):
-                for yy0 in range(0, M):
-                    for yy1 in range(0, M):
-                        if yy0 != yy1 and (xx > 1 or yy0 > 1) and (xx > 1 or yy1 > 1):
-                            lines.append({'start': (xx, yy0), 'end': (xx, yy1)})
-                            found = True
-                            break
-                    if found: break
-                if found: break
-            if not found:
-                # Fallback: reuse safe aligned pairs within bounds
-                lines.append({'start': (0, M-1), 'end': (0, max(0, M-2))})
-
-        if scenario == 2 and P > 0:
-            # Make it even harder: require the two hinge cells as popular
-            # In 2x2, the "hinge" cells are (x, y+1) and (x+1, y)
-            pcs = [(x, y+1), (x+1, y)]
-            popular = pcs[:P] if P <= 2 else pcs + [ (min(N-1,2), min(M-1,2)) ]*(P-2)
-
-        return {"metro_lines": lines, "popular_cells": popular, "P": len(popular)}
-
-    # Otherwise, force J = 0 contradiction — single line, non-aligned endpoints
-    # If J is not 0, this still tends to be hard; but we make it UNSAT by scenario 2 popular cell
-    if K < 1:
-        K = 1
-    sx, sy, ex, ey = 0, 0, 1 if N > 1 else 0, 1 if M > 1 else 0
-    if N <= 1 or M <= 1 or (sx == ex or sy == ey):
-        # Try the other diagonal if needed
-        ex, ey = min(N-1, 1), 0
-        if sx == ex or sy == ey:
-            raise ValueError("Grid too small to force UNSAT; need at least 2x2.")
-
-    lines = [{'start': (sx, sy), 'end': (ex, ey)}]
-    # Pad remaining lines with harmless aligned segments
-    for _ in range(1, K):
-        if N >= 2:
-            lines.append({'start': (0, M-1), 'end': (1, M-1)})  # horizontal at bottom row
-        else:
-            lines.append({'start': (0, 0), 'end': (0, max(0, M-1))})  # vertical fallback
-
-    if scenario == 2:
-        # One popular cell unreachable with J=0: pick a cell not aligned with any line endpoints
-        # Choose center-ish if possible
-        px, py = (N-1)//2, (M-1)//2
-        popular = [(px, py)]
-        return {"metro_lines": lines, "popular_cells": popular, "P": 1}
-
-    return {"metro_lines": lines, "popular_cells": [], "P": 0}
-
+def generate_unsat_instance(N, M, K, J, P):
+    """
+    Generates a guaranteed UNSAT instance using one of several techniques:
+    
+    1. J=0 with diagonal misalignment: All lines have misaligned start/end
+    2. Crossing gadget (J<1): Two lines that must cross
+    3. Coverage-based: Popular cells placed in unreachable regions
+    """
+    
+    all_cells = [(x, y) for x in range(N) for y in range(M)]
+    
+    # Strategy 1: J=0 Diagonal Misalignment (Guaranteed UNSAT)
+    if J == 0:
+        if N < 2 or M < 2:
+            print("Error: Grid too small (need N>=2, M>=2) for J=0 UNSAT.", file=sys.stderr)
+            sys.exit(1)
+        
+        metro_lines = []
+        used = set()
+        
+        for i in range(K):
+            # Pick two points that are diagonally misaligned
+            # (differ in both x and y coordinates)
+            attempts = 0
+            while attempts < 50:
+                available = [p for p in all_cells if p not in used]
+                if len(available) < 2:
+                    break
+                
+                s, e = random.sample(available, 2)
+                
+                # For J=0, a path must be either horizontal or vertical only
+                # So if s and e differ in BOTH x and y, it's impossible
+                if s[0] != e[0] and s[1] != e[1]:
+                    metro_lines.append({'start': s, 'end': e})
+                    used.add(s)
+                    used.add(e)
+                    break
+                
+                attempts += 1
+            
+            if len(metro_lines) != i + 1:
+                print("Error: Could not create enough misaligned pairs for J=0.", file=sys.stderr)
+                sys.exit(1)
+        
+        # Popular cells: place in remaining cells (doesn't matter for J=0 UNSAT)
+        pool = [p for p in all_cells if p not in used]
+        popular_cells = random.sample(pool, min(len(pool), P)) if P > 0 else []
+        
+        return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': P}
+    
+    # Strategy 2: Crossing Gadget (J < 1, i.e., J=0 implicitly)
+    if J == 0 and K >= 2:
+        # Two lines must cross at a central point
+        # With J=0, they can't turn, so they can't avoid the crossing
+        if N < 5 or M < 5:
+            print("Error: Grid too small for crossing gadget.", file=sys.stderr)
+            sys.exit(1)
+        
+        cx, cy = N // 2, M // 2
+        
+        # Horizontal line through center
+        h_start = (0, cy)
+        h_end = (N - 1, cy)
+        
+        # Vertical line through center
+        v_start = (cx, 0)
+        v_end = (cx, M - 1)
+        
+        metro_lines = [
+            {'start': h_start, 'end': h_end},
+            {'start': v_start, 'end': v_end}
+        ]
+        used = {h_start, h_end, v_start, v_end}
+        
+        # Add remaining lines arbitrarily
+        pool = [p for p in all_cells if p not in used]
+        for i in range(2, K):
+            if len(pool) < 2:
+                print("Warning: Not enough cells for additional lines in crossing gadget.", file=sys.stderr)
+                break
+            s, e = random.sample(pool, 2)
+            metro_lines.append({'start': s, 'end': e})
+            pool = [p for p in pool if p not in {s, e}]
+        
+        pool = [p for p in all_cells if p not in {line['start'] or line['end'] for line in metro_lines}]
+        popular_cells = random.sample(pool, min(len(pool), P)) if P > 0 else []
+        
+        return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': P}
+    
+    # Strategy 3: Coverage-Based UNSAT (Scenario 2)
+    # Pick metro lines, compute their reachable cells, place popular cells outside
+    if P > 0:
+        points = random.sample(all_cells, min(2 * K, len(all_cells)))
+        metro_lines = []
+        for i in range(min(K, len(points) // 2)):
+            metro_lines.append({'start': points[2*i], 'end': points[2*i + 1]})
+        
+        # Compute all cells reachable by any metro line
+        reachable = set()
+        for line in metro_lines:
+            reachable.update(compute_reachable_cells(N, M, J, line['start'], line['end']))
+        
+        # Popular cells must be in unreachable regions
+        all_start_ends = {line['start'] for line in metro_lines} | {line['end'] for line in metro_lines}
+        unreachable = [p for p in all_cells if p not in reachable and p not in all_start_ends]
+        
+        if len(unreachable) < P:
+            print(f"Warning: Only {len(unreachable)} unreachable cells found for {P} popular cells.", file=sys.stderr)
+            P = len(unreachable)
+        
+        popular_cells = random.sample(unreachable, P) if P > 0 else []
+        
+        return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': P}
+    
+    # Strategy 4: Overpacking with Forced Conflicts
+    # Create K lines that collectively require more cells than available
+    # This is tricky, so we use: multiple long lines that must not overlap
+    remaining_cells = N * M
+    metro_lines = []
+    used = set()
+    
+    for i in range(K):
+        available = [p for p in all_cells if p not in used]
+        if len(available) < 2:
+            print("Error: Not enough cells for overpacking strategy.", file=sys.stderr)
+            sys.exit(1)
+        
+        s, e = random.sample(available, 2)
+        metro_lines.append({'start': s, 'end': e})
+        
+        # Estimate path length (Manhattan distance is lower bound)
+        min_path_len = abs(s[0] - e[0]) + abs(s[1] - e[1]) + 1
+        used.add(s)
+        used.add(e)
+        
+        # Reserve cells for this path (generous estimate)
+        remaining_cells -= min(remaining_cells, min_path_len * 2)
+        
+        if remaining_cells < 0:
+            # We've run out of space—this is UNSAT!
+            break
+    
+    popular_cells = []
+    
+    return {'metro_lines': metro_lines, 'popular_cells': popular_cells, 'P': 0}
 
 
 def write_city_file(filepath, N, M, K, J, P, metro_lines, popular_cells):
@@ -227,7 +287,7 @@ def write_city_file(filepath, N, M, K, J, P, metro_lines, popular_cells):
             for line in metro_lines:
                 f.write(f"{line['start'][0]} {line['start'][1]} {line['end'][0]} {line['end'][1]}\n")
 
-            if scenario == 2:
+            if scenario == 2 and P > 0:
                 f.write(" ".join(f"{x} {y}" for x, y in popular_cells) + "\n")
     except IOError as e:
         print(f"Error writing to file '{filepath}': {e}", file=sys.stderr)
@@ -236,7 +296,7 @@ def write_city_file(filepath, N, M, K, J, P, metro_lines, popular_cells):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test Case Generator for Metro Map Planning Assignment.",
+        description="Corrected Test Case Generator for Metro Map Planning Assignment.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
@@ -267,10 +327,9 @@ def main():
             instance = generate_satisfiable_instance(args.N, args.M, args.K, args.J, args.P)
         elif args.mode == 'unsat':
             instance = generate_unsat_instance(args.N, args.M, args.K, args.J, args.P)
-        else: # random
+        else:  # random
             instance = generate_random_instance(args.N, args.M, args.K, args.J, args.P)
         
-        # P might be adjusted in constructive mode if space is tight
         P_final = instance.get('P', args.P)
 
         write_city_file(filepath, args.N, args.M, args.K, args.J, P_final, 

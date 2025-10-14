@@ -21,10 +21,12 @@ run: all
 		exit $$status; \
 	fi
 	./run2.sh $(FILE)
+	python format_checker.py $(FILE)
 
 clean:
 	@rm -f $(ENCODER_EXE) $(DECODER_EXE)
-	@rm -f *.satinput *.satoutput *.metromap *.map *.png *.log
+	@rm -f *.satinput *.satoutput *.metromap *.map *.png *.log testcases/*.satinput testcases/*.satoutput \
+	testcases/*.metromap testcases/*.png
 
 $(ENCODER_EXE): encoder.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<

@@ -3,9 +3,10 @@
 #include <sstream>
 #include <fstream>
 using namespace std;
-using Clause = vector<int>;
 
-static const int DIRS = 4;
+using Clause = vector<long long>;
+
+const int DIRS = 4;
 const int DX[4] = {1,0,-1,0};
 const int DY[4] = {0,1,0,-1};
 
@@ -17,13 +18,12 @@ struct City {
     vector<pair<int,int>> popular;
 };
 
-static vector<string> tokenize_file(const string &path) {
+vector<string> tokenize_file(const string &path) {
     ifstream fin(path);
     if (!fin) { cerr << "Error: cannot open " << path << "\n"; exit(1); }
     vector<string> tokens;
     string line;
     while (getline(fin, line)) {
-        // strip comments
         size_t pos = line.find('#');
         if (pos != string::npos) line.resize(pos);
         stringstream ss(line);
@@ -33,7 +33,7 @@ static vector<string> tokenize_file(const string &path) {
     return tokens;
 }
 
-static City parse_city(const string &path) {
+City parse_city(const string &path) {
     vector<string> tokens = tokenize_file(path);
     if (tokens.empty()) { cerr << "Error: empty or invalid city file\n"; exit(1); }
     size_t idx = 0;
@@ -70,36 +70,73 @@ struct VarFormula {
     int K,N,M,J;
     long long num_use;
     long long num_V;
-    long long total_vars;
+    long long core_vars;
     VarFormula(int K_, int N_, int M_, int J_): K(K_), N(N_), M(M_), J(J_) {
         num_use = 1LL * K * N * M;
         num_V = 1LL * K * N * M * DIRS * (J + 1);
-        total_vars = num_use + num_V;
+        core_vars = num_use + num_V;
     }
     long long use_index(int k,int x,int y) const {
-        return (1LL * k * N + x) * M + y; // 0-based index into uses
+        return (1LL * k * N + x) * M + y;
     }
     long long V_index(int k,int x,int y,int d,int t) const {
         long long base = (1LL * k * N + x) * M + y;
-        return ((base * DIRS) + d) * (J + 1) + t; // 0-based index into V block
+        return ((base * DIRS) + d) * (J + 1) + t;
     }
-    int use_var(int k,int x,int y) const = delete; // avoid old-style
-    long use_var_id(int k,int x,int y) const {
-        return use_index(k,x,y) + 1; // DIMACS ids start at 1
-    }
-    long long V_var_id(int k,int x,int y,int d,int t) const {
-        return num_use + V_index(k,x,y,d,t) + 1;
-    }
-    long long num_vars() const { return total_vars; }
+    long long use_var_id(int k,int x,int y) const { return use_index(k,x,y) + 1; }
+    long long V_var_id(int k,int x,int y,int d,int t) const { return num_use + V_index(k,x,y,d,t) + 1; }
+    long long core_var_count() const { return core_vars; }
 };
 
 bool in_grid(int x,int y,int N,int M) {
     return x >= 0 && x < N && y >= 0 && y < M;
 }
 
-void write_clause_to_stream(ostream &os, const Clause &cl) {
-    for (int lit : cl) os << lit << ' ';
+struct ClauseSink {
+    string tmpfile;
+    ofstream tmp;
+    long long clause_count;
+    long long next_aux_id;
+    ClauseSink(const string &tmpfile_, long long core_vars) : tmpfile(tmpfile_), clause_count(0), next_aux_id(core_vars + 1) {
+        tmp.open(tmpfile);
+        if (!tmp) { cerr << "Error: cannot open tmp file " << tmpfile << "\n"; exit(1); }
+    }
+    ~ClauseSink() {
+        if (tmp.is_open()) tmp.close();
+    }
+    void write_clause(const Clause &cl) {
+        for (long long lit : cl) tmp << lit << ' ';
+        tmp << "0\n";
+        ++clause_count;
+    }
+    long long alloc_aux() { return next_aux_id++; }
+    long long total_aux_allocated() const { return next_aux_id - 1; }
+};
+
+void write_clause_stream(ofstream &os, const Clause &cl) {
+    for (long long lit : cl) os << lit << ' ';
     os << "0\n";
+}
+
+vector<long long> sinz_sequential_at_most_one(const vector<long long> &vars, ClauseSink &sink) {
+    vector<long long> aux;
+    size_t n = vars.size();
+    if (n <= 1) return aux;
+    aux.reserve(n-1);
+    for (size_t i=0;i+1<n;++i) aux.push_back(sink.alloc_aux());
+    {
+        Clause c; c.push_back(-vars[0]); c.push_back(aux[0]); sink.write_clause(c);
+    }
+    for (size_t i = 1; i+1 < n; ++i) {
+        Clause c; c.push_back(-vars[i]); c.push_back(aux[i]); sink.write_clause(c);
+    }
+    for (size_t i = 1; i+1 < n; ++i) {
+        Clause c; c.push_back(-aux[i-1]); c.push_back(aux[i]); sink.write_clause(c);
+    }
+    for (size_t i = 1; i < n; ++i) {
+        Clause c; c.push_back(-vars[i]); c.push_back(-aux[i-1]); sink.write_clause(c);
+    }
+    return aux;
 }
 
 int main(int argc, char** argv) {
@@ -113,203 +150,149 @@ int main(int argc, char** argv) {
 
     City city = parse_city(cityfile);
     VarFormula vf(city.K, city.N, city.M, city.J);
+    long long core_vars = vf.core_var_count();
 
-    // stream clauses to temporary file
-    ofstream tmp(tmpfile);
-    if (!tmp) { cerr << "Error: cannot open temporary clause file " << tmpfile << "\n"; return 1; }
-    long long clause_count = 0;
+    ClauseSink sink(tmpfile, core_vars);
 
-    // small Clause buffer reused to avoid allocations
     Clause cl;
 
-    // 1a: V => use_var  (-V ∨ use)
     for (int k=0;k<city.K;++k) {
         for (int x=0;x<city.N;++x) for (int y=0;y<city.M;++y) {
             long long useid = vf.use_var_id(k,x,y);
             for (int d=0; d<DIRS; ++d) for (int t=0; t<=city.J; ++t) {
                 long long vid = vf.V_var_id(k,x,y,d,t);
-                cl.clear();
-                cl.push_back((int)(-vid));
-                cl.push_back((int)useid);
-                write_clause_to_stream(tmp, cl);
-                ++clause_count;
+                cl.clear(); cl.push_back(-vid); cl.push_back(useid);
+                sink.write_clause(cl);
             }
         }
     }
 
-    // 1b: use_var => OR(V) for non-start cells
     for (int k=0;k<city.K;++k) {
         auto [sx,sy] = city.starts[k];
         for (int x=0;x<city.N;++x) for (int y=0;y<city.M;++y) {
             if (x==sx && y==sy) continue;
-            cl.clear();
-            cl.push_back((int)(-vf.use_var_id(k,x,y)));
-            for (int d=0; d<DIRS; ++d) for (int t=0; t<=city.J; ++t) cl.push_back((int)vf.V_var_id(k,x,y,d,t));
-            write_clause_to_stream(tmp, cl);
-            ++clause_count;
+            cl.clear(); cl.push_back(-vf.use_var_id(k,x,y));
+            for (int d=0; d<DIRS; ++d) for (int t=0; t<=city.J; ++t) cl.push_back(vf.V_var_id(k,x,y,d,t));
+            sink.write_clause(cl);
         }
     }
 
-    // 2. Disjoint paths: (-use_k1 ∨ -use_k2)
     for (int x=0;x<city.N;++x) for (int y=0;y<city.M;++y) {
-        for (int k1=0;k1<city.K;++k1) for (int k2=k1+1;k2<city.K;++k2) {
-            cl.clear();
-            cl.push_back((int)(-vf.use_var_id(k1,x,y)));
-            cl.push_back((int)(-vf.use_var_id(k2,x,y)));
-            write_clause_to_stream(tmp, cl);
-            ++clause_count;
-        }
+        vector<long long> uses;
+        uses.reserve(city.K);
+        for (int k=0;k<city.K;++k) uses.push_back(vf.use_var_id(k,x,y));
+        sinz_sequential_at_most_one(uses, sink);
     }
 
-    // 3. At most one state per cell: pairwise (-V1 ∨ -V2)
-    // We will generate pairwise clauses but reuse cl buffer
     for (int k=0;k<city.K;++k) {
         for (int x=0;x<city.N;++x) for (int y=0;y<city.M;++y) {
-            // collect ids in a small vector on stack
             vector<long long> states;
             states.reserve(DIRS * (city.J + 1));
             for (int d=0; d<DIRS; ++d) for (int t=0; t<=city.J; ++t) states.push_back(vf.V_var_id(k,x,y,d,t));
-            for (size_t i=0;i<states.size();++i) {
-                for (size_t j=i+1;j<states.size();++j) {
-                    cl.clear();
-                    cl.push_back((int)(-states[i]));
-                    cl.push_back((int)(-states[j]));
-                    write_clause_to_stream(tmp, cl);
-                    ++clause_count;
-                }
-            }
+            sinz_sequential_at_most_one(states, sink);
         }
     }
 
-    // 4a. Force start and end cells used (unit clauses)
     for (int k=0;k<city.K;++k) {
         auto [sx,sy] = city.starts[k];
         auto [ex,ey] = city.ends[k];
-        cl.clear();
-        cl.push_back((int)vf.use_var_id(k,sx,sy));
-        write_clause_to_stream(tmp, cl);
-        ++clause_count;
-        cl.clear();
-        cl.push_back((int)vf.use_var_id(k,ex,ey));
-        write_clause_to_stream(tmp, cl);
-        ++clause_count;
+        cl.clear(); cl.push_back(vf.use_var_id(k,sx,sy)); sink.write_clause(cl);
+        cl.clear(); cl.push_back(vf.use_var_id(k,ex,ey)); sink.write_clause(cl);
     }
 
-    // 4b. Start cell cannot be entered: (-V[start])
     for (int k=0;k<city.K;++k) {
         auto [sx,sy] = city.starts[k];
-        for (int d=0; d<DIRS; ++d) for (int t=0;t<=city.J;++t) {
-            cl.clear();
-            cl.push_back((int)(-vf.V_var_id(k,sx,sy,d,t)));
-            write_clause_to_stream(tmp, cl);
-            ++clause_count;
+        for (int d=0; d<DIRS; ++d) for (int t=0; t<=city.J; ++t) {
+            cl.clear(); cl.push_back(-vf.V_var_id(k,sx,sy,d,t)); sink.write_clause(cl);
         }
     }
 
-    // 4c. From start at least one neighbor must be entered with t=0
     for (int k=0;k<city.K;++k) {
         auto [sx,sy] = city.starts[k];
         cl.clear();
         for (int d=0; d<DIRS; ++d) {
             int nx = sx + DX[d], ny = sy + DY[d];
-            if (in_grid(nx,ny,city.N,city.M)) cl.push_back((int)vf.V_var_id(k,nx,ny,d,0));
+            if (in_grid(nx,ny,city.N,city.M)) cl.push_back(vf.V_var_id(k,nx,ny,d,0));
         }
         if (cl.empty()) {
-            // contradictory clause to force UNSAT relative to forced use
-            cl.clear();
-            cl.push_back((int)(-vf.use_var_id(k,sx,sy)));
-            write_clause_to_stream(tmp, cl);
-            ++clause_count;
-        } else {
-            write_clause_to_stream(tmp, cl);
-            ++clause_count;
-        }
+            cl.clear(); cl.push_back(-vf.use_var_id(k,sx,sy)); sink.write_clause(cl);
+        } else sink.write_clause(cl);
     }
 
-    // 4x. End cell: forbid moves from end cell
     for (int k=0;k<city.K;++k) {
         auto [ex,ey] = city.ends[k];
         for (int d=0; d<DIRS; ++d) {
             int nx = ex + DX[d], ny = ey + DY[d];
             if (!in_grid(nx,ny,city.N,city.M)) continue;
             for (int t=0;t<=city.J;++t) {
-                cl.clear();
-                cl.push_back((int)(-vf.V_var_id(k,nx,ny,d,t)));
-                write_clause_to_stream(tmp, cl);
-                ++clause_count;
+                cl.clear(); cl.push_back(-vf.V_var_id(k,nx,ny,d,t)); sink.write_clause(cl);
             }
         }
     }
 
-    // 4e. Flow conservation for intermediate cells (entry -> exactly one exit)
     for (int k=0;k<city.K;++k) {
         auto [ex,ey] = city.ends[k];
         for (int x=0;x<city.N;++x) for (int y=0;y<city.M;++y) {
             if (x==ex && y==ey) continue;
             for (int d_entry=0; d_entry<DIRS; ++d_entry) for (int t_entry=0; t_entry<=city.J; ++t_entry) {
                 long long v_entry = vf.V_var_id(k,x,y,d_entry,t_entry);
-                // prepare exit list
-                vector<int> exits;
-                exits.reserve(DIRS);
+                vector<long long> exits;
                 for (int d_move=0; d_move<DIRS; ++d_move) {
                     int nx = x + DX[d_move], ny = y + DY[d_move];
                     if (!in_grid(nx,ny,city.N,city.M)) continue;
                     int tprime = (d_move == d_entry ? t_entry : t_entry + 1);
-                    if (tprime <= city.J) exits.push_back((int)vf.V_var_id(k,nx,ny,d_move,tprime));
+                    if (tprime <= city.J) exits.push_back(vf.V_var_id(k,nx,ny,d_move,tprime));
                 }
                 if (exits.empty()) {
-                    cl.clear(); cl.push_back((int)(-v_entry));
-                    write_clause_to_stream(tmp, cl);
-                    ++clause_count;
+                    cl.clear(); cl.push_back(-v_entry); sink.write_clause(cl);
                 } else {
-                    cl.clear();
-                    cl.push_back((int)(-v_entry));
-                    for (int e : exits) cl.push_back(e);
-                    write_clause_to_stream(tmp, cl);
-                    ++clause_count;
-                    for (size_t i=0;i<exits.size();++i)
-                        for (size_t j=i+1;j<exits.size();++j) {
-                            cl.clear();
-                            cl.push_back((int)(-v_entry));
-                            cl.push_back((int)(-exits[i]));
-                            cl.push_back((int)(-exits[j]));
-                            write_clause_to_stream(tmp, cl);
-                            ++clause_count;
-                        }
+                    cl.clear(); cl.push_back(-v_entry);
+                    for (auto e : exits) cl.push_back(e);
+                    sink.write_clause(cl);
+                    if (exits.size() <= 6) {
+                        for (size_t i=0;i<exits.size();++i)
+                            for (size_t j=i+1;j<exits.size();++j) {
+                                Clause c; c.push_back(-v_entry); c.push_back(-exits[i]); c.push_back(-exits[j]);
+                                sink.write_clause(c);
+                            }
+                    } else {
+                        for (size_t i=0;i<exits.size();++i)
+                            for (size_t j=i+1;j<exits.size();++j) {
+                                Clause c; c.push_back(-v_entry); c.push_back(-exits[i]); c.push_back(-exits[j]);
+                                sink.write_clause(c);
+                            }
+                    }
                 }
             }
         }
     }
 
-    // Scenario 2 popular cells: require at least one line uses each popular cell
     if (city.scenario == 2) {
         for (auto &pp : city.popular) {
             int px = pp.first, py = pp.second;
             cl.clear();
-            for (int k=0;k<city.K;++k) cl.push_back((int)vf.use_var_id(k,px,py));
-            write_clause_to_stream(tmp, cl);
-            ++clause_count;
+            for (int k=0;k<city.K;++k) cl.push_back(vf.use_var_id(k,px,py));
+            sink.write_clause(cl);
         }
     }
 
-    tmp.close();
+    // long long aux_allocated = sink.total_aux_allocated() - core_vars;
+    long long last_aux_id = sink.total_aux_allocated();
+    long long total_vars = last_aux_id >= (core_vars+1) ? last_aux_id : core_vars;
+    long long total_clauses = sink.clause_count;
 
-    // Now write final DIMACS file: header + copy tmpfile
     ofstream fout(outdimacs);
     if (!fout) { cerr << "Error: cannot open " << outdimacs << " for writing\n"; return 1; }
-    fout << "p cnf " << vf.num_vars() << " " << clause_count << "\n";
-    // stream copy
+    fout << "p cnf " << total_vars << " " << total_clauses << "\n";
+    sink.tmp.close();
     ifstream tin(tmpfile);
-    if (!tin) { cerr << "Error: cannot re-open temporary clause file\n"; return 1; }
+    if (!tin) { cerr << "Error: cannot open " << tmpfile << " for reading\n"; return 1; }
     string line;
-    while (getline(tin, line)) {
-        fout << line << "\n";
-    }
+    while (getline(tin, line)) fout << line << '\n';
     tin.close();
     fout.close();
-    // remove temporary file
     remove(tmpfile.c_str());
 
-    cout << "Vars: " << vf.num_vars() << "\n" << "Clauses: " << clause_count << "\n";
+    cerr << "Vars: " << total_vars << ", Clauses: " << total_clauses << "\n";
     return 0;
 }
